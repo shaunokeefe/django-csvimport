@@ -30,7 +30,8 @@ class CSVImportAdmin(ModelAdmin):
             obj.encoding = ''
             defaults = self.filename_defaults(obj.file_name)
             cmd.setup(mappings=obj.field_list, 
-                      modelname=obj.model_name, 
+                      modelname=obj.model_name,
+                      charset='',
                       uploaded=obj.upload_file,
                       defaults=defaults)
         errors = cmd.run(logid=obj.id)
