@@ -13,6 +13,8 @@ from django.db import models
 INTEGER = ['BigIntegerField', 'IntegerField', 'AutoField',
            'PositiveIntegerField', 'PositiveSmallIntegerField']
 FLOAT = ['DecimalField', 'FloatField']
+DATE = ['DateTimeField', 'DateField']
+
 NUMERIC = INTEGER + FLOAT
 # Note if mappings are manually specified they are of the following form ...
 # MAPPINGS = "column1=shared_code,column2=org(Organisation|name),column3=description"
@@ -163,11 +165,13 @@ class Command(LabelCommand):
             self.loglist.append('Using manually entered mapping list') 
         else:
             for i, heading in enumerate(self.csvfile[0]):
-                for key in heading, heading.lower():
-                    if fieldmap.has_key(key):
-                        field = fieldmap[key]
-                        key = self.check_fkey(key, field)
-                        mapping.append('column%s=%s' % (i+1, key))
+                key = heading.lower()
+                if not key:
+                    continue
+                    #if fieldmap.has_key(key):
+                        #field = fieldmap[key]
+                        #key = self.check_fkey(key, field)
+                mapping.append('column%s=%s' % (i+1, key))
             mappingstr = ','.join(mapping)
             if mapping:
                 self.loglist.append('Using mapping from first row of CSV file') 
@@ -180,81 +184,140 @@ class Command(LabelCommand):
             return self.loglist
         for row in self.csvfile[1:]:
             counter += 1
-            model_instance = self.model()
-            model_instance.csvimport_id = csvimportid
-            for (column, field, foreignkey) in self.mappings:
-                field_type = fieldmap.get(field).get_internal_type()
+
+            # create the main instance
+            #model_instance = self.model()
+            #model_instance.csvimport_id = csvimportid
+            instance_tree = {'model': self.model, 'fks': {}, 'm2ms': {}, 'vals':{}}
+
+            for (field_names, column) in self.mappings:
                 if self.nameindexes:
                     column = indexes.index(column)
                 else:
                     column = int(column)-1
-
-                row[column] = row[column].strip()
                 
-                if foreignkey:
-                    row[column] = self.insert_fkey(foreignkey, row[column])
-
+                value = row[column]
+                
                 if self.debug:
                     self.loglist.append('%s.%s = "%s"' % (self.model.__name__, 
-                                                          field, row[column]))
-                # Tidy up numeric data    
-                if field_type in NUMERIC:
-                    if not row[column]:
-                        row[column] = 0
-                    else:
-                        try:
-                            row[column] = float(row[column])
-                        except:
-                            self.loglist.append('Column %s = %s is not a number so is set to 0' \
-                                                % (field, row[column]))
-                            row[column] = 0
-                    if field_type in INTEGER:
-                        if row[column] > 9223372036854775807:
-                            self.loglist.append('Column %s = %s more than the max integer 9223372036854775807' \
-                                                % (field, row[column]))
-                        if str(row[column]).lower() in ('nan', 'inf', '+inf', '-inf'):
-                            self.loglist.append('Column %s = %s is not an integer so is set to 0' \
-                                                % (field, row[column]))
-                            row[column] = 0
-                        row[column] = int(row[column])
-                        if row[column] < 0 and field_type.startswith('Positive'):
-                            self.loglist.append('Column %s = %s, less than zero so set to 0' \
-                                                % (field, row[column]))
-                            row[column] = 0
-                try:
-                    model_instance.__setattr__(field, row[column])
-                except:
-                    try:
-                        row[column] = model_instance.getattr(field).to_python(row[column])
-                    except:
-                        try:
-                            row[column] = datetime(row[column])
-                        except:
-                            row[column] = None
-                            self.loglist.append('Column %s failed' % field)
+                                                          field, value))
+                   
+                def clean(cell, field_type, loglist):
+                    value = cell.strip()
+                    if field_type in DATE:
+                        #TODO make this more flexible
+                        value = datetime.strptime(cell, "%m/%d/%Y")
 
-            if self.defaults:
-                for (field, value, foreignkey) in self.defaults:
+                    elif field_type in NUMERIC:
+                        if not value:
+                            value = 0
+                        else:
+                            try:
+                                value = float(value)
+                            except:
+                                loglist.append('Column %s = %s is not a number so is set to 0' \
+                                                    % (field, value))
+                                value = 0
+                        if field_type in INTEGER:
+                            if value > 9223372036854775807:
+                                loglist.append('Column %s = %s more than the max integer 9223372036854775807' \
+                                                    % (field, value))
+                            if str(value).lower() in ('nan', 'inf', '+inf', '-inf'):
+                                loglist.append('Column %s = %s is not an integer so is set to 0' \
+                                                    % (field, value))
+                                value = 0
+                            value = int(value)
+                            if value < 0 and field_type.startswith('Positive'):
+                                loglist.append('Column %s = %s, less than zero so set to 0' \
+                                                    % (field, value))
+                                value = 0
+                    return value
+               
+                
+                current_leaf = instance_tree
+                # then for each field...a
+                field_names = list(field_names)
+                while field_names:
+                    field_name = field_names.pop(0)
                     try:
-                        done = model_instance.getattr(field)
-                    except:
-                        done = False
-                    if not done:
-                        if foreignkey:
-                            value = self.insert_fkey(foreignkey, value)
-                        model_instance.__setattr__(field, value)
-            if self.deduplicate:
-                matchdict = {}
-                for (column, field, foreignkey) in self.mappings:
-                    matchdict[field + '__exact'] = getattr(model_instance, 
-                                                           field, None)
-                try:
-                    self.model.objects.get(**matchdict)
-                    continue
-                except ObjectDoesNotExist:
-                    pass
+                        field = None
+                        for f in current_leaf['model']._meta.fields:
+                            if f.name == field_name:
+                                field = f
+                                break
+                        if not field:
+                            continue # TODO
+
+                    except: # todo catch the correct exception
+                        continue
+
+                    field_type = field.get_internal_type()
+                        
+                    if field_type == 'ForeignKey': # TODO
+                        # TODO: fetch existing models that match paramters
+                        if field_name not in current_leaf['fks']:
+                            fk_model = field.related.parent_model # TODO
+                            #instance = fk_model()
+                            current_leaf['fks'][field_name]= {'model': fk_model, 'fks': {}, 'm2ms': {}, 'vals': {}}
+                        current_leaf = current_leaf['fks'][field_name]
+                    elif field_type == 'ManyToMany':
+                        #TODO
+                        # will need to pop the next entry because we have a number, too
+                        break
+                    else:
+                        # This is either a regular value field or wrong
+                        try:
+                            # prepare the value
+                            value = clean(row[column], field_type, self.loglist)
+                            current_leaf['vals'][field_name] = value
+                            break
+                        except:
+                            pass
+                            #try:
+                            #    value = model_instance.getattr(field).to_python(value)
+                            #except:
+                            #    try:
+                            #        value = datetime(value)
+                            #    except:
+                            #        value= None
+                            #        self.loglist.append('Column %s failed' % field)
+
+                    #if foreignkey:
+                    #    fk_model_type, fk_field = foreignkey
+                    #    if not fk_model_type in fk_instances: #self.insert_fkey(foreignkey, row[column])
+                    #        fk_model = models.get_model(self.app_label, fk_model_type)
+                    #        fk_instances[fk_model_type] = fk_model()
+                    #    fk_instances[fk_model_type].__setattr__(field, value)
+                    #
+                    #    value = fk_instances[fk_model_type]
+               
+            #for instance in fk_instances.values():
+            #    instance.save()
+
+            #if self.defaults:
+            #    for (field, default_value, foreignkey) in self.defaults:
+            #        try:
+            #            done = model_instance.getattr(field)
+            #        except:
+            #            done = False
+            #        if not done:
+            #            # TODO add foreign key in a consistent way 
+            #            if foreignkey:
+            #                default_value = self.insert_fkey(foreignkey, default_value)
+            #            model_instance.__setattr__(field, default_value)
+            #if self.deduplicate:
+            #    matchdict = {}
+            #    for (column, field, foreignkey) in self.mappings:
+            #        matchdict[field + '__exact'] = getattr(model_instance, 
+            #                                               field, None)
+            #    try:
+            #        self.model.objects.get(**matchdict)
+            #        continue
+            #    except ObjectDoesNotExist:
+            #        pass
             try:
-                model_instance.save()
+                self.tree_save(instance_tree)
+                #model_instance.save()
             except Exception, err:
                 self.loglist.append('Exception found... %s Instance %s not saved.' % (err, counter))
         if self.loglist:
@@ -264,6 +327,62 @@ class Command(LabelCommand):
                            'error_log':'\n'.join(self.loglist),
                            'import_date':datetime.now()}
             return self.loglist
+    def tree_save(self, leaf):
+        
+        instance = None
+        # Check to see if the instance exists, otherwise, create it
+        if False:
+            # TODO
+            pass
+        else:
+            try:
+                instance = leaf['model']()
+            except Exception, err:
+                self.loglist.append('Exception found... %s instance not created: %s' % (leaf['model'], err))
+        # assign non fks fields to the main instance
+        for field_name, value in leaf['vals'].items():
+            try:
+                instance.__setattr__(field_name, value)
+            except Exception, err:
+                self.loglist.append('Exception found... %s Instance not saved.' % (err))
+
+        # save fks first as these may be null=False
+        for field_name, fk in leaf['fks'].items():
+            try:
+                fk = self.tree_save(fk)
+            except Exception, err:
+                self.loglist.append('Couldnt create fk %s for %s: %s.' % (field_name, instance, err))
+                continue
+            
+            try:
+                instance.__setattr__(field_name, fk)
+            except Exception, err:
+                self.loglist.append('Couldnt add  fk %s for %s: %s.' % (field_name, instance, err))
+                continue
+      
+        # Need to save the main instance before setting m2ms
+        #try:
+        instance.save()
+        #except Exception, err:
+        #    self.loglist.append('Couldnt save isntance %s: %s.' % (instance, err))
+        
+        if False:
+            # add m2m fields to the main instance
+            for field_name, m2m, in leaf['m2ms'].items():
+                try:
+                    m2m = self.tree_save(m2m)
+                except Exception, err:
+                    self.loglist.append('Couldnt create m2m %s for %s: %s.' % (field_name, instance, err))
+                    continue
+
+                try:
+                    instance.__getattribute__(field_name).add(m2m)
+                except Exception, err:
+                    self.loglist.append('Couldnt add m2m %s to %s : %s.' % (field_name, instance, err))
+
+        return instance
+
+
 
     def insert_fkey(self, foreignkey, rowcol):
         """ Add fkey if not present 
@@ -334,58 +453,36 @@ class Command(LabelCommand):
         for line in csv_data:
             yield line.encode(charset)
     
-    def __mappings(self, mappings):
+    def __mappings(self, mapping_string):
         """
         Parse the mappings, and return a list of them.
         """
-        if not mappings:
+        if not mapping_string:
             return []
+   
+        model = self.model
+        
+        mapping_string = mapping_string.replace(',', ' ')
+        mapping_string = mapping_string.replace('column', '')
 
-        def parse_mapping(args):
-            """
-            Parse the custom mapping syntax (column1=field1(ForeignKey|field),
-            etc.)
-            
-            >>> parse_mapping('a=b(c|d)')
-            [('a', 'b', '(c|d)')]
-            """
-            
-            pattern = re.compile(r'(\w+)=(\w+)(\(\w+\|\w+\))?')
-            mappings = pattern.findall(args)
-            
-            mappings = list(mappings)
-            for mapping in mappings:
-                mapp = mappings.index(mapping)
-                mappings[mapp] = list(mappings[mapp])
-                mappings[mapp][2] = parse_foreignkey(mapping[2])
-                mappings[mapp] = tuple(mappings[mapp])
-            mappings = list(mappings)
-            
-            return mappings
-            
-        def parse_foreignkey(key):
-            """
-            Parse the foreignkey syntax (Key|field)
-            
-            >>> parse_foreignkey('(a|b)')
-            ('a', 'b')
-            """
-            
-            pattern = re.compile(r'(\w+)\|(\w+)', re.U)
-            if key.startswith('(') and key.endswith(')'):
-                key = key[1:-1]
-                
-            found = pattern.search(key)
-            
-            if found != None:
-                return (found.group(1), found.group(2))
-            else:
-                return None
+        """
+        Parse the custom mapping syntax (column1=[fk1.fk2...fk3].field,
+        etc.)
+        
+        """
+        
+        pattern = re.compile(r'(\w+)=([\w.]+)')
+        matches = pattern.findall(mapping_string)
+        matches = list(matches)
 
-        mappings = mappings.replace(',', ' ')
-        mappings = mappings.replace('column', '')
-        return parse_mapping(mappings)
-
+        mappings = []
+        for mapping in matches:
+            column, field_list = mapping
+            fields = field_list.split('.')
+            mappings.append((fields, column))
+            #mappings[ind][2] = parse_foreignkey(mapping[2])
+            #mappings[ind] = tuple(mappings[ind])
+        return mappings
 
 class FatalError(Exception):
     """
