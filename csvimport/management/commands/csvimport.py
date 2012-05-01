@@ -5,6 +5,7 @@ from datetime import datetime
 import codecs
 import chardet
 
+from django.core.exceptions import ObjectDoesNotExist
 from django.core.management.base import LabelCommand, BaseCommand
 from optparse import make_option
 from django.db import models
@@ -43,6 +44,9 @@ def save_csvimport(props=None, instance=None):
             else:
                 print line
                 print
+
+def TreeSaveException(Exception):
+    pass
 
 class Command(LabelCommand):
     """
@@ -290,17 +294,6 @@ class Command(LabelCommand):
             #                default_value = self.insert_fkey(foreignkey, default_value)
             #            model_instance.__setattr__(field, default_value)
             
-            # TODO: move this to the saving routine (e.g. fetch rather than create new/\s\+$//e``
-            #if self.deduplicate:
-            #    matchdict = {}
-            #    for (column, field, foreignkey) in self.mappings:
-            #        matchdict[field + '__exact'] = getattr(model_instance, 
-            #                                               field, None)
-            #    try:
-            #        self.model.objects.get(**matchdict)
-            #        continue
-            #    except ObjectDoesNotExist:
-            #        pass
             try:
                 instance = self.tree_save(instance_tree)
                 
@@ -320,20 +313,28 @@ class Command(LabelCommand):
         
         instance = None
         # Check to see if the instance exists, otherwise, create it
-        if False:
-            # TODO
-            pass
-        else:
+        matchdict = {}
+        for field_name, val in leaf['vals'].items():
+            matchdict[field_name + '__exact'] = val
+            try:
+                instance = leaf['model'].objects.get(**matchdict)
+            except ObjectDoesNotExist:
+                pass
+        
+        if not instance:
             try:
                 instance = leaf['model']()
             except Exception, err:
                 self.loglist.append('Exception found... %s instance not created: %s' % (leaf['model'], err))
+                raise TreeSaveException('main instance creation failed: %s' % (err))
+
         # assign non fks fields to the main instance
         for field_name, value in leaf['vals'].items():
             try:
                 instance.__setattr__(field_name, value)
             except Exception, err:
-                self.loglist.append('Exception found... %s Instance not saved.' % (err))
+                self.loglist.append('Exception found... %s Field %s not set for instance %s.' % \
+                        (err, field_name, instance))
 
         # save fks first as these may be null=False
         for field_name, fk in leaf['fks'].items():
@@ -346,14 +347,14 @@ class Command(LabelCommand):
             try:
                 instance.__setattr__(field_name, fk)
             except Exception, err:
-                self.loglist.append('Couldnt add  fk %s for %s: %s.' % (field_name, instance, err))
-                continue
+                self.loglist.append('Couldnt add fk %s for %s: %s.' % (field_name, instance, err))
       
         # Need to save the main instance before setting m2ms
-        #try:
-        instance.save()
-        #except Exception, err:
-        #    self.loglist.append('Couldnt save isntance %s: %s.' % (instance, err))
+        try:
+            instance.save()
+        except Exception, err:
+            self.loglist.append('Couldnt save isntance %s: %s.' % (instance, err))
+            raise TreeSaveException('main instance save failed: %s' % (err))
         
         # add m2m fields to the main instance
         for field_name, m2m_list, in leaf['m2ms'].items():
