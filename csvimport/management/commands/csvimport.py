@@ -5,7 +5,6 @@ from datetime import datetime
 import codecs
 import chardet
 
-from django.core.exceptions import ObjectDoesNotExist
 from django.core.management.base import LabelCommand, BaseCommand
 from optparse import make_option
 from django.db import models
