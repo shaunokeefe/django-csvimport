@@ -9,6 +9,7 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.core.management.base import LabelCommand, BaseCommand
 from optparse import make_option
 from django.db import models
+from django.db.models.fields import FieldDoesNotExist
 
 INTEGER = ['BigIntegerField', 'IntegerField', 'AutoField',
            'PositiveIntegerField', 'PositiveSmallIntegerField']
@@ -122,14 +123,6 @@ class Command(LabelCommand):
         else:    
             self.check_filesystem(csvfile)
 
-    def check_fkey(self, key, field):
-        """ Build fkey mapping via introspection of models """
-        #TODO fix to find related field name rather than assume second field
-        if field.__class__ == models.ForeignKey:
-            key += '(%s|%s)' % (field.related.parent_model.__name__,
-                                field.related.parent_model._meta.fields[1].name,)
-        return key
-
     def check_filesystem(self, csvfile):
         """ Check for files on the file system """
         if os.path.exists(csvfile):
@@ -168,9 +161,7 @@ class Command(LabelCommand):
                 key = heading.lower()
                 if not key:
                     continue
-                    #if fieldmap.has_key(key):
-                        #field = fieldmap[key]
-                        #key = self.check_fkey(key, field)
+                
                 mapping.append('column%s=%s' % (i+1, key))
             mappingstr = ','.join(mapping)
             if mapping:
@@ -182,15 +173,15 @@ class Command(LabelCommand):
                                    to the CSV file or supply a mapping list''' % 
                                 (self.model._meta.app_label, self.model.__name__))
             return self.loglist
+        
         for row in self.csvfile[1:]:
             counter += 1
 
-            # create the main instance
-            #model_instance = self.model()
-            #model_instance.csvimport_id = csvimportid
+            # create the top level instance
             instance_tree = {'model': self.model, 'fks': {}, 'm2ms': {}, 'vals':{}}
 
             for (field_names, column) in self.mappings:
+                
                 if self.nameindexes:
                     column = indexes.index(column)
                 else:
@@ -202,7 +193,7 @@ class Command(LabelCommand):
                     self.loglist.append('%s.%s = "%s"' % (self.model.__name__, 
                                                           field, value))
                    
-                def clean(cell, field_type, loglist):
+                def clean(cell, field, field_type, loglist):
                     value = cell.strip()
                     if field_type in DATE:
                         #TODO make this more flexible
@@ -235,65 +226,59 @@ class Command(LabelCommand):
                
                 
                 current_leaf = instance_tree
-                # then for each field...a
+    
                 field_names = list(field_names)
                 while field_names:
+                    # take the leftmost fieldname and try and resolve
+                    # it against the current model
                     field_name = field_names.pop(0)
                     try:
-                        field = None
-                        for f in current_leaf['model']._meta.fields:
-                            if f.name == field_name:
-                                field = f
-                                break
-                        if not field:
-                            continue # TODO
-
-                    except: # todo catch the correct exception
-                        continue
+                        model = current_leaf['model']
+                        field = model._meta.get_field(field_name)
+                    except FieldDoesNotExist:
+                        self.loglist.append('Model %s has no field %s.' % (model.__name__, field_name))
+                        break
 
                     field_type = field.get_internal_type()
-                        
-                    if field_type == 'ForeignKey': # TODO
-                        # TODO: fetch existing models that match paramters
+                    if field_type == 'ForeignKey': 
                         if field_name not in current_leaf['fks']:
-                            fk_model = field.related.parent_model # TODO
-                            #instance = fk_model()
+                            fk_model = field.related.parent_model 
                             current_leaf['fks'][field_name]= {'model': fk_model, 'fks': {}, 'm2ms': {}, 'vals': {}}
                         current_leaf = current_leaf['fks'][field_name]
-                    elif field_type == 'ManyToMany':
-                        #TODO
+
+                    elif field_type == 'ManyToManyField':
                         # will need to pop the next entry because we have a number, too
-                        break
+                        ind = field_names.pop(0)
+                        try:
+                            ind = int(ind)
+                        except ValueError:
+                            # field following the m2m fielname isnt a number
+                            # so we cant parse it to the end 
+                            self.loglist.append('m2m field followed by non-int expression (%s)' % (ind))
+                            break
+                        
+                        if field_name not in current_leaf['m2ms']:
+                            current_leaf['m2ms'][field_name] = {}
+                        
+                        if ind not in current_leaf['m2ms'][field_name]: 
+                            m2m_model = field.related.parent_model
+                            current_leaf['m2ms'][field_name][ind] = {'model': m2m_model, 'fks': {}, 'm2ms': {}, 'vals': {}}
+
+                        current_leaf = current_leaf['m2ms'][field_name][ind]
+                            
                     else:
                         # This is either a regular value field or wrong
+                        # prepare the value
                         try:
-                            # prepare the value
-                            value = clean(row[column], field_type, self.loglist)
+                            value = clean(value, field, field_type, self.loglist)
+                        except Exception, err:
+                            self.loglist.append('Could not prepare value in cell [%s, %s]' % \
+                                    (row, column))
+                        else:
                             current_leaf['vals'][field_name] = value
                             break
-                        except:
-                            pass
-                            #try:
-                            #    value = model_instance.getattr(field).to_python(value)
-                            #except:
-                            #    try:
-                            #        value = datetime(value)
-                            #    except:
-                            #        value= None
-                            #        self.loglist.append('Column %s failed' % field)
-
-                    #if foreignkey:
-                    #    fk_model_type, fk_field = foreignkey
-                    #    if not fk_model_type in fk_instances: #self.insert_fkey(foreignkey, row[column])
-                    #        fk_model = models.get_model(self.app_label, fk_model_type)
-                    #        fk_instances[fk_model_type] = fk_model()
-                    #    fk_instances[fk_model_type].__setattr__(field, value)
-                    #
-                    #    value = fk_instances[fk_model_type]
-               
-            #for instance in fk_instances.values():
-            #    instance.save()
-
+                   
+            # TODO: re-incorporate defaults stuff       
             #if self.defaults:
             #    for (field, default_value, foreignkey) in self.defaults:
             #        try:
@@ -305,6 +290,8 @@ class Command(LabelCommand):
             #            if foreignkey:
             #                default_value = self.insert_fkey(foreignkey, default_value)
             #            model_instance.__setattr__(field, default_value)
+            
+            # TODO: move this to the saving routine (e.g. fetch rather than create new/\s\+$//e``
             #if self.deduplicate:
             #    matchdict = {}
             #    for (column, field, foreignkey) in self.mappings:
@@ -316,8 +303,11 @@ class Command(LabelCommand):
             #    except ObjectDoesNotExist:
             #        pass
             try:
-                self.tree_save(instance_tree)
-                #model_instance.save()
+                instance = self.tree_save(instance_tree)
+                
+                # TODO: this is a hangover from the original code; check if necessary
+                instance.csvimport_id = csvimportid
+                instance.save()
             except Exception, err:
                 self.loglist.append('Exception found... %s Instance %s not saved.' % (err, counter))
         if self.loglist:
@@ -366,13 +356,13 @@ class Command(LabelCommand):
         #except Exception, err:
         #    self.loglist.append('Couldnt save isntance %s: %s.' % (instance, err))
         
-        if False:
-            # add m2m fields to the main instance
-            for field_name, m2m, in leaf['m2ms'].items():
+        # add m2m fields to the main instance
+        for field_name, m2m_list, in leaf['m2ms'].items():
+            for ind, m2m in m2m_list.items():
                 try:
                     m2m = self.tree_save(m2m)
                 except Exception, err:
-                    self.loglist.append('Couldnt create m2m %s for %s: %s.' % (field_name, instance, err))
+                    self.loglist.append('Couldnt create m2m %s[%s] for %s: %s.' % (field_name, ind, instance, err))
                     continue
 
                 try:
@@ -459,7 +449,7 @@ class Command(LabelCommand):
         """
         if not mapping_string:
             return []
-   
+    
         model = self.model
         
         mapping_string = mapping_string.replace(',', ' ')
