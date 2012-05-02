@@ -45,7 +45,10 @@ def save_csvimport(props=None, instance=None):
                 print line
                 print
 
-def TreeSaveException(Exception):
+class TreeSaveException(Exception):
+    pass
+
+class NullValueException(Exception):
     pass
 
 class Command(LabelCommand):
@@ -177,7 +180,7 @@ class Command(LabelCommand):
                                 (self.model._meta.app_label, self.model.__name__))
             return self.loglist
         
-        for row in self.csvfile[1:]:
+        for row_ind, row in enumerate(self.csvfile[1:]):
             counter += 1
 
             # create the top level instance
@@ -191,6 +194,8 @@ class Command(LabelCommand):
                     column = int(column)-1
                 
                 value = row[column]
+                if value == '':
+                    continue
                 
                 if self.debug:
                     self.loglist.append('%s.%s = "%s"' % (self.model.__name__, 
@@ -200,7 +205,10 @@ class Command(LabelCommand):
                     value = cell.strip()
                     if field_type in DATE:
                         #TODO make this more flexible
-                        value = datetime.strptime(cell, "%m/%d/%Y")
+                        try:
+                            value = datetime.strptime(cell, "%m/%d/%Y")
+                        except:
+                            raise NullValueException('Null value passed for date')
 
                     elif field_type in NUMERIC:
                         if not value:
@@ -274,9 +282,11 @@ class Command(LabelCommand):
                         # prepare the value
                         try:
                             value = clean(value, field, field_type, self.loglist)
+                        except NullValueException, err:
+                            break
                         except Exception, err:
-                            self.loglist.append('Could not prepare value in cell [%s, %s]' % \
-                                    (row, column))
+                            self.loglist.append("Could not prepare value '%s' in cell [%s, %s]" % \
+                                    (value, row_ind, column))
                         else:
                             current_leaf['vals'][field_name] = value
                             break
@@ -348,14 +358,14 @@ class Command(LabelCommand):
                 instance.__setattr__(field_name, fk)
             except Exception, err:
                 self.loglist.append('Couldnt add fk %s for %s: %s.' % (field_name, instance, err))
-      
+         
         # Need to save the main instance before setting m2ms
         try:
             instance.save()
         except Exception, err:
-            self.loglist.append('Couldnt save isntance %s: %s.' % (instance, err))
+            self.loglist.append('Couldnt save isntance %s' % (err))
             raise TreeSaveException('main instance save failed: %s' % (err))
-        
+       
         # add m2m fields to the main instance
         for field_name, m2m_list, in leaf['m2ms'].items():
             for ind, m2m in m2m_list.items():
