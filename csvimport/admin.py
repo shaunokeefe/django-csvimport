@@ -5,17 +5,20 @@ from django.contrib import admin
 from django.contrib.admin import ModelAdmin 
 
 from csvimport.models import CSVImport
+from csvimport.widgets import ErrorTextarea
 
 class CSVImportAdmin(ModelAdmin):
     ''' Custom model to not have much editable! '''
     readonly_fields = ['file_name',
                        'encoding',
                        'upload_method',
-                       'error_log',
                        'import_user']
     formfield_overrides = {
-        models.CharField: {'widget': forms.Textarea(attrs={'rows':'4', 
-                                                           'cols':'60'})},
+        models.CharField: {'widget': forms.Textarea(attrs={'rows':'4',
+            'cols':'60'})},
+        # TODO: This shouldnt override all TextField fields; 
+        # just the error log field
+        models.TextField: {'widget': ErrorTextarea()},
         }
 
     def save_model(self, request, obj, form, change):
