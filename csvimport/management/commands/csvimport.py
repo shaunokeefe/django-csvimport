@@ -5,7 +5,7 @@ from datetime import datetime
 import codecs
 import chardet
 
-from django.core.exceptions import ObjectDoesNotExist
+from django.core.exceptions import ObjectDoesNotExist, MultipleObjectsReturned
 from django.core.management.base import LabelCommand, BaseCommand
 from optparse import make_option
 from django.db import models
@@ -44,6 +44,9 @@ def save_csvimport(props=None, instance=None):
             else:
                 print line
                 print
+
+class NonUniqueLeafValues(Exception):
+    pass
 
 class TreeSaveException(Exception):
     pass
@@ -306,12 +309,12 @@ class Command(LabelCommand):
             
             try:
                 instance = self.tree_save(instance_tree)
-                
+            
                 # TODO: this is a hangover from the original code; check if necessary
                 instance.csvimport_id = csvimportid
                 instance.save()
             except Exception, err:
-                self.loglist.append('Exception found... %s Instance %s not saved.' % (err, counter))
+                self.loglist.append('Instance %s not saved (%s)' % (counter, err))
         if self.loglist:
             self.props = { 'file_name':self.file_name,
                            'import_user':'cron',
@@ -319,38 +322,69 @@ class Command(LabelCommand):
                            'error_log':'\n'.join(self.loglist),
                            'import_date':datetime.now()}
             return self.loglist
-    def tree_save(self, leaf):
+    
+    def fetch_for_values(self, leaf):
         
-        instance = None
-        # Check to see if the instance exists, otherwise, create it
         matchdict = {}
+        instance = None
+        
+        # first the vales from the model
         for field_name, val in leaf['vals'].items():
             matchdict[field_name + '__exact'] = val
-            try:
-                instance = leaf['model'].objects.get(**matchdict)
-            except ObjectDoesNotExist:
-                pass
+
+        # Then, the fks 
+        #for field_name, val in leaf['fks'].items():
+        #    pass
+
+        # Note: skip M2M fields as they don't really 'identify' their parent
+        
+        try:
+            instance = leaf['model'].objects.get(**matchdict)
+        except MultipleObjectsReturned:
+            # The leaf values matched multiple instances.
+            # No clear path ahead here so bail 
+            
+            raise NonUniqueLeafValues()
+        except ObjectDoesNotExist:
+            # this doesn't matter; we'll just create it
+            pass
+
+        return instance
+        
+    def tree_save(self, leaf):
+        
+        try:
+            instance = self.fetch_for_values(leaf)
+        except NonUniqueLeafValues:
+            error = 'values (%s) yeilded multiple instances for model %s' % (
+                ', '.join(['%s:%s' % (key, value) for key, value in leaf['vals'].items()]), 
+                leaf['model'])
+
+            #raise TreeSaveException('multiple instances for supplied values')
+            raise TreeSaveException(error)
         
         if not instance:
             try:
                 instance = leaf['model']()
             except Exception, err:
-                self.loglist.append('Exception found... %s instance not created: %s' % (leaf['model'], err))
-                raise TreeSaveException('main instance creation failed: %s' % (err))
+                #self.loglist.append('%s instance not created: %s' % (leaf['model'], err))
+                error = '%s instance not created: %s' % (leaf['model'], err)
+                #raise TreeSaveException('main instance creation failed: %s' % (err))
+                raise TreeSaveException(error)
 
         # assign non fks fields to the main instance
         for field_name, value in leaf['vals'].items():
             try:
                 instance.__setattr__(field_name, value)
             except Exception, err:
-                self.loglist.append('Exception found... %s Field %s not set for instance %s.' % \
+                self.loglist.append('%s Field %s not set for instance %s.' % \
                         (err, field_name, instance))
 
         # save fks first as these may be null=False
         for field_name, fk in leaf['fks'].items():
             try:
                 fk = self.tree_save(fk)
-            except Exception, err:
+            except TreeSaveException, err:
                 self.loglist.append('Couldnt create fk %s for %s: %s.' % (field_name, instance, err))
                 continue
             
@@ -363,7 +397,7 @@ class Command(LabelCommand):
         try:
             instance.save()
         except Exception, err:
-            self.loglist.append('Couldnt save isntance %s' % (err))
+            #self.loglist.append('Couldnt save isntance %s' % (err))
             raise TreeSaveException('main instance save failed: %s' % (err))
        
         # add m2m fields to the main instance
@@ -371,8 +405,8 @@ class Command(LabelCommand):
             for ind, m2m in m2m_list.items():
                 try:
                     m2m = self.tree_save(m2m)
-                except Exception, err:
-                    self.loglist.append('Couldnt create m2m %s[%s] for %s: %s.' % (field_name, ind, instance, err))
+                except TreeSaveException, err:
+                    self.loglist.append('Couldnt save m2m %s[%s] for %s: %s.' % (field_name, ind, instance, err))
                     continue
 
                 try:
