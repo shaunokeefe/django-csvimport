@@ -25,7 +25,7 @@ class CSVImport(models.Model):
     encoding = models.CharField(max_length=32, blank=True)
     upload_method = models.CharField(blank=False, max_length=50, 
                                      default='manual', choices=CHOICES)    
-    error_log = models.TextField(help_text='Each line is an import error')
+    error_log = models.TextField(help_text='Each line is an import error', blank=True)
     import_date = models.DateField(auto_now=True)
     import_user = models.CharField(max_length=255, default='anonymous',
                                    help_text='User id as text', blank=True)
