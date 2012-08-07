@@ -51,9 +51,165 @@ class NonUniqueLeafValues(Exception):
 class TreeSaveException(Exception):
     pass
 
-class NullValueException(Exception):
-    pass
+class TempModel(object):
+    
+    class NoSuchField(Exception):
+        pass
+    
+    class InvalidValue(Exception):
+        pass
+    
+    class InvalidIndex(Exception):
+        pass
 
+    class InvalidFieldType(Exception):
+        pass
+
+    def __init__(self, model):
+        self.model = model
+        self.values = {}
+        self.fks = {}
+        self.m2ms = {}
+        self.instance = None
+
+    def get_model(self):
+        return self.model
+
+    def get_fks(self):
+        return [(field, fk) for field, fk in self.fks.values()]
+    
+    def get_values(self):
+        return [(field, val) for field, val in self.values.values()]
+    
+    def get_m2ms(self):
+        return [(field, m2m_list) for field, m2m_list in self.m2ms.values()]
+
+    def get_unique_fields_dict(self):
+        uf_dict = {}
+        for field, fk in self.fks.values():
+            if field.unique == True:
+                uf_dict[field.name + '__pk'] = fk.pk
+        
+        for field, value in self.values.values():
+            if field.unique == True:
+                uf_dict[field.name + '__exact'] = value
+
+        return uf_dict
+
+    def get_required_fields_dict(self):
+        rf_dict = {}
+        for field, fk in self.fks.values():
+            if field.blank == False:
+                if not fk.instance:
+                    continue
+                rf_dict[field.name + '__pk'] = fk.instance.pk
+        
+        for field, value in self.values.values():
+            if field.blank == False:
+                rf_dict[field.name + '__exact'] = value
+
+        return rf_dict
+
+    def get_field(self, field_name):
+        try:
+            return self.model._meta.get_field(field_name)
+        except FieldDoesNotExist:
+            msg = 'Model %s has no field %s.' % (self.model.__name__, field_name)
+            raise TempModel.NoSuchField(msg)
+    def set_instance(self, instance):
+        self.instance = instance
+
+    def get_instance(self):
+        return self.instance
+
+    def clean(self, value, field_type):
+        value = value.strip()
+        if field_type in DATE:
+            try:
+                value = datetime.strptime(value, "%d/%m/%Y")
+            except:
+                raise TempModel.InvalidValue('Null value passed for date')
+
+        elif field_type in NUMERIC:
+            if not value:
+                value = 0
+            else:
+                try:
+                    value = float(value)
+                except ValueError:
+                    msg ='Value (%s) not a number' % (value)
+                    raise InvalidValue(msg)
+            if field_type in INTEGER:
+                
+                if value > 9223372036854775807:
+                    msg ='Numeric value (%d) more than max allowable integer' % (value) 
+                    raise InvalidValue(msg)
+                
+                if str(value).lower() in ('nan', 'inf', '+inf', '-inf'):
+                    msg ='Value (%s) not an integer' % (value) 
+                    raise InvalidValue(msg)
+                
+                value = int(value)
+                if value < 0 and field_type.startswith('Positive'):
+                    #loglist.append('Column %s = %s, less than zero so set to 0' \
+                    #                    % (field, value))
+                    value = 0
+        return value
+
+    def add_value(self, field_name, value):
+
+        field = self.get_field(field_name)
+        field_type = field.get_internal_type()
+        if field_type in ['ForeignKey', 'ManyToManyField']:
+            raise TempModel.InvalidFieldType('%s field passed as value' % (field_type))
+
+        value = self.clean(value, field_type)
+        self.values[field_name] = (field, value)
+
+    def add_m2m(self, field_name, ind):
+
+        field = self.get_field(field_name)
+        if not field.get_internal_type() == 'ManyToManyField':
+            raise TempModel.InvalidFieldType('%s field passed as value' % (field_type))
+        
+        try:
+            ind = int(ind)
+        except ValueError:
+            # field following the m2m fielname isnt a number
+            # so we cant parse it to the end 
+            raise InvalidIndex()
+        
+        tm = None
+
+        if field_name not in self.m2ms:
+           # current_leaf['m2ms'][field_name] = {}
+            self.m2ms[field_name] = (field, {})
+
+        if ind not in self.m2ms[field_name][1]: 
+            m2m_model = field.related.parent_model
+            tm = TempModel(m2m_model)
+            self.m2ms[field_name][1][ind] = tm
+        else:
+            tm = self.m2ms[field_name][1][ind]
+        
+        return tm
+
+    def add_fk(self, field_name):
+
+        field = self.get_field(field_name)
+        if not field.get_internal_type() == 'ForeignKey':
+            raise TempModel.InvalidFieldType('%s field passed as fk' % (field_type))
+
+        tm = None
+        if field_name not in self.fks:
+            fk_model = field.related.parent_model 
+            tm  = TempModel(fk_model)
+            self.fks[field_name] = (field, tm)
+        else:
+            tm = self.fks[field_name][1]
+        
+        return tm
+               
 class Command(LabelCommand):
     """
     Parse and map a CSV resource to a Django model.
@@ -185,9 +341,8 @@ class Command(LabelCommand):
         
         for row_ind, row in enumerate(self.csvfile[1:]):
             counter += 1
-
             # create the top level instance
-            instance_tree = {'model': self.model, 'fks': {}, 'm2ms': {}, 'vals':{}}
+            instance_tree = TempModel(self.model)
 
             for (field_names, column) in self.mappings:
                 
@@ -204,41 +359,6 @@ class Command(LabelCommand):
                     self.loglist.append('%s.%s = "%s"' % (self.model.__name__, 
                                                           field, value))
                    
-                def clean(cell, field, field_type, loglist):
-                    value = cell.strip()
-                    if field_type in DATE:
-                        #TODO make this more flexible
-                        try:
-                            value = datetime.strptime(cell, "%m/%d/%Y")
-                        except:
-                            raise NullValueException('Null value passed for date')
-
-                    elif field_type in NUMERIC:
-                        if not value:
-                            value = 0
-                        else:
-                            try:
-                                value = float(value)
-                            except:
-                                loglist.append('Column %s = %s is not a number so is set to 0' \
-                                                    % (field, value))
-                                value = 0
-                        if field_type in INTEGER:
-                            if value > 9223372036854775807:
-                                loglist.append('Column %s = %s more than the max integer 9223372036854775807' \
-                                                    % (field, value))
-                            if str(value).lower() in ('nan', 'inf', '+inf', '-inf'):
-                                loglist.append('Column %s = %s is not an integer so is set to 0' \
-                                                    % (field, value))
-                                value = 0
-                            value = int(value)
-                            if value < 0 and field_type.startswith('Positive'):
-                                loglist.append('Column %s = %s, less than zero so set to 0' \
-                                                    % (field, value))
-                                value = 0
-                    return value
-               
-                
                 current_leaf = instance_tree
     
                 field_names = list(field_names)
@@ -247,73 +367,44 @@ class Command(LabelCommand):
                     # it against the current model
                     field_name = field_names.pop(0)
                     try:
-                        model = current_leaf['model']
-                        field = model._meta.get_field(field_name)
-                    except FieldDoesNotExist:
-                        self.loglist.append('Model %s has no field %s.' % (model.__name__, field_name))
-                        break
-
-                    field_type = field.get_internal_type()
-                    if field_type == 'ForeignKey': 
-                        if field_name not in current_leaf['fks']:
-                            fk_model = field.related.parent_model 
-                            current_leaf['fks'][field_name]= {'model': fk_model, 'fks': {}, 'm2ms': {}, 'vals': {}}
-                        current_leaf = current_leaf['fks'][field_name]
-
-                    elif field_type == 'ManyToManyField':
-                        # will need to pop the next entry because we have a number, too
-                        ind = field_names.pop(0)
                         try:
-                            ind = int(ind)
-                        except ValueError:
-                            # field following the m2m fielname isnt a number
-                            # so we cant parse it to the end 
-                            self.loglist.append('m2m field followed by non-int expression (%s)' % (ind))
-                            break
-                        
-                        if field_name not in current_leaf['m2ms']:
-                            current_leaf['m2ms'][field_name] = {}
-                        
-                        if ind not in current_leaf['m2ms'][field_name]: 
-                            m2m_model = field.related.parent_model
-                            current_leaf['m2ms'][field_name][ind] = {'model': m2m_model, 'fks': {}, 'm2ms': {}, 'vals': {}}
+                            ind_string = field_names.pop(0)
+                            try: 
+                                ind = int(ind_string)
+                            except ValueError:
+                                # not an ind; put it back
+                                # this should be an fk
+                                field_names = [ind_string] + field_names
+                                current_leaf = current_leaf.add_fk(field_name)
+                                continue
+                            current_leaf = current_leaf.add_m2m(field_name, ind)
+                            continue
 
-                        current_leaf = current_leaf['m2ms'][field_name][ind]
-                            
-                    else:
-                        # This is either a regular value field or wrong
-                        # prepare the value
-                        try:
-                            value = clean(value, field, field_type, self.loglist)
-                        except NullValueException, err:
-                            break
-                        except Exception, err:
-                            self.loglist.append("Could not prepare value '%s' in cell [%s, %s]" % \
-                                    (value, row_ind, column))
-                        else:
-                            current_leaf['vals'][field_name] = value
-                            break
-                   
-            # TODO: re-incorporate defaults stuff       
-            #if self.defaults:
-            #    for (field, default_value, foreignkey) in self.defaults:
-            #        try:
-            #            done = model_instance.getattr(field)
-            #        except:
-            #            done = False
-            #        if not done:
-            #            # TODO add foreign key in a consistent way 
-            #            if foreignkey:
-            #                default_value = self.insert_fkey(foreignkey, default_value)
-            #            model_instance.__setattr__(field, default_value)
-             
+                        except IndexError:
+                            # Last field name, this is just a regular
+                            # value field
+                            try:
+                                current_leaf = current_leaf.add_value(field_name, value)
+                            except TempModel.InvalidValue, e:
+                                msg = "Could not prepare value '%s' in cell [%s, %s]" % \
+                                    (value, row_ind, column)
+                                self.loglist.append(msg)
+                    except TempModel.InvalidFieldType, e:
+                        msg = "mapping string mapped field %s to invalid field type (%s)" % \
+                            (field_name, e)
+                        self.loglist.append(msg)
+
+                    except TempModel.NoSuchField, e:
+                        msg = "%s" % (e)
+                        self.loglist.append(msg)
+
             try:
                 instance = self.tree_save(instance_tree)
             
                 # TODO: this is a hangover from the original code; check if necessary
                 instance.csvimport_id = csvimportid
                 instance.save()
-            except Exception, err:
+            except TreeSaveException, err:
                 self.loglist.append('Instance %s not saved (%s)' % (counter, err))
         if self.loglist:
             self.props = { 'file_name':self.file_name,
@@ -324,92 +415,111 @@ class Command(LabelCommand):
             return self.loglist
     
     def fetch_for_values(self, leaf):
-        
+       
+        # Match always on unique fields
+        # Failing that, try required fields?
+        # Never match on optional fields 
+        # (save an instance, and then
+        # add a new optional field and it 
+        # wont match)
+
         matchdict = {}
         instance = None
-        
-        # first the vales from the model
-        for field_name, val in leaf['vals'].items():
-            matchdict[field_name + '__exact'] = val
+        matchdict = leaf.get_unique_fields_dict()
 
-        # Then, the fks 
-        #for field_name, val in leaf['fks'].items():
-        #    pass
+        if not len(matchdict):
+            # no unique values specified
+            # add required values
+            matchdict = leaf.get_required_fields_dict()
+
+        if not len(matchdict):
+            # No values specified. No point in searching
+            return instance
 
         # Note: skip M2M fields as they don't really 'identify' their parent
         
         try:
-            instance = leaf['model'].objects.get(**matchdict)
+            instance = leaf.get_model().objects.get(**matchdict)
         except MultipleObjectsReturned:
             # The leaf values matched multiple instances.
             # No clear path ahead here so bail 
-            
             raise NonUniqueLeafValues()
+
         except ObjectDoesNotExist:
-            # this doesn't matter; we'll just create it
+            # this doesn't matter; we'll just create it later
             pass
 
         return instance
         
     def tree_save(self, leaf):
-        
+         
+        # save fks first as these may be null=False
+        for field, fk in leaf.get_fks():
+            try:
+                self.tree_save(fk)
+            except TreeSaveException, e:
+                self.loglist.append('Couldnt create fk %s for %s: %s.' 
+                        % (field.name, fk.get_model(), e))
+                continue
+
         try:
             instance = self.fetch_for_values(leaf)
         except NonUniqueLeafValues:
             error = 'values (%s) yeilded multiple instances for model %s' % (
-                ', '.join(['%s:%s' % (key, value) for key, value in leaf['vals'].items()]), 
-                leaf['model'])
+                ', '.join(['%s:%s' % (field.name, value) for field, value in leaf.get_values()]), 
+                leaf.get_model())
 
             raise TreeSaveException(error)
         
         if not instance:
             try:
-                instance = leaf['model']()
+                instance = leaf.get_model()()
             except Exception, err:
-                error = '%s instance not created: %s' % (leaf['model'], err)
+                error = '%s instance not created: %s' % (leaf.get_model(), err)
                 raise TreeSaveException(error)
 
         # assign non fks fields to the main instance
-        for field_name, value in leaf['vals'].items():
+        for field, value in leaf.get_values():
             try:
-                instance.__setattr__(field_name, value)
+                instance.__setattr__(field.name, value)
             except Exception, err:
                 self.loglist.append('%s Field %s not set for instance %s.' % \
-                        (err, field_name, instance))
+                        (err, field.name, instance))
 
         # save fks first as these may be null=False
-        for field_name, fk in leaf['fks'].items():
-            try:
-                fk = self.tree_save(fk)
-            except TreeSaveException, err:
-                self.loglist.append('Couldnt create fk %s for %s: %s.' % (field_name, instance, err))
+        for field, fk in leaf.get_fks():
+            fk = fk.get_instance()
+            if not fk:
                 continue
-            
+
             try:
-                instance.__setattr__(field_name, fk)
-            except Exception, err:
-                self.loglist.append('Couldnt add fk %s for %s: %s.' % (field_name, instance, err))
+                instance.__setattr__(field.name, fk)
+            except Exception, err: # TODO catch explicit exceptions
+                self.loglist.append('Couldnt add fk %s to %s: %s.' % \
+                        (field.name, fk.get_model(), err))
          
         # Need to save the main instance before setting m2ms
         try:
             instance.save()
         except Exception, err:
-            #self.loglist.append('Couldnt save isntance %s' % (err))
             raise TreeSaveException('main instance save failed: %s' % (err))
-       
+      
+        leaf.set_instance(instance)
+
         # add m2m fields to the main instance
-        for field_name, m2m_list, in leaf['m2ms'].items():
+        for field, m2m_list in leaf.get_m2ms():
             for ind, m2m in m2m_list.items():
                 try:
                     m2m = self.tree_save(m2m)
                 except TreeSaveException, err:
-                    self.loglist.append('Couldnt save m2m %s[%s] for %s: %s.' % (field_name, ind, instance, err))
+                    self.loglist.append('Couldnt save m2m %s[%s] for %s: %s.' % \
+                            (field.name, ind, instance, err))
                     continue
 
                 try:
-                    instance.__getattribute__(field_name).add(m2m)
+                    instance.__getattribute__(field.name).add(m2m)
                 except Exception, err:
-                    self.loglist.append('Couldnt add m2m %s to %s : %s.' % (field_name, instance, err))
+                    self.loglist.append('Couldnt add m2m %s to %s : %s.' % (field.name, instance, err))
 
         return instance
 

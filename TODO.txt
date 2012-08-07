@@ -1,0 +1,6 @@
+1.  Re-think logging strategy
+2.  Refactor entire csvimport.py command file to separate command line stuff
+    from code dealing with the imports
+3.  Sort out what's happening with the local copies of csv files
+4.  Get back defaults functionality
+5.  Flags to update/not update matching instances
