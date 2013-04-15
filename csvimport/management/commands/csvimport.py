@@ -35,7 +35,7 @@ def save_csvimport(props=None, instance=None):
     except:
         # Running as command line
         print 'Assumed charset = %s\n' % instance.charset
-        print '###############################\n' 
+        print '###############################\n'
         for line in instance.loglist:
             if type(line) != type(''):
                 for subline in line:
@@ -51,19 +51,20 @@ class NonUniqueLeafValues(Exception):
 class TreeSaveException(Exception):
     pass
 
-class TempModel(object):
-    
-    class NoSuchField(Exception):
-        pass
-    
-    class InvalidValue(Exception):
-        pass
-    
-    class InvalidIndex(Exception):
-        pass
+class NoSuchField(Exception):
+    pass
 
-    class InvalidFieldType(Exception):
-        pass
+class InvalidValue(Exception):
+    pass
+
+class InvalidIndex(Exception):
+    pass
+
+class InvalidFieldType(Exception):
+    pass
+
+class TempModel(object):
+
 
     def __init__(self, model):
         self.model = model
@@ -77,10 +78,10 @@ class TempModel(object):
 
     def get_fks(self):
         return [(field, fk) for field, fk in self.fks.values()]
-    
+
     def get_values(self):
         return [(field, val) for field, val in self.values.values()]
-    
+
     def get_m2ms(self):
         return [(field, m2m_list) for field, m2m_list in self.m2ms.values()]
 
@@ -89,7 +90,7 @@ class TempModel(object):
         for field, fk in self.fks.values():
             if field.unique == True:
                 uf_dict[field.name + '__pk'] = fk.pk
-        
+
         for field, value in self.values.values():
             if field.unique == True:
                 uf_dict[field.name + '__exact'] = value
@@ -103,7 +104,7 @@ class TempModel(object):
                 if not fk.instance:
                     continue
                 rf_dict[field.name + '__pk'] = fk.instance.pk
-        
+
         for field, value in self.values.values():
             if field.blank == False:
                 rf_dict[field.name + '__exact'] = value
@@ -115,7 +116,7 @@ class TempModel(object):
             return self.model._meta.get_field(field_name)
         except FieldDoesNotExist:
             msg = 'Model %s has no field %s.' % (self.model.__name__, field_name)
-            raise TempModel.NoSuchField(msg)
+            raise NoSuchField(msg)
     def set_instance(self, instance):
         self.instance = instance
 
@@ -128,7 +129,7 @@ class TempModel(object):
             try:
                 value = datetime.strptime(value, "%d/%m/%Y")
             except:
-                raise TempModel.InvalidValue('Null value passed for date')
+                raise InvalidValue('Null value passed for date')
 
         elif field_type in NUMERIC:
             if not value:
@@ -140,15 +141,15 @@ class TempModel(object):
                     msg ='Value (%s) not a number' % (value)
                     raise InvalidValue(msg)
             if field_type in INTEGER:
-                
+
                 if value > 9223372036854775807:
-                    msg ='Numeric value (%d) more than max allowable integer' % (value) 
+                    msg ='Numeric value (%d) more than max allowable integer' % (value)
                     raise InvalidValue(msg)
-                
+
                 if str(value).lower() in ('nan', 'inf', '+inf', '-inf'):
-                    msg ='Value (%s) not an integer' % (value) 
+                    msg ='Value (%s) not an integer' % (value)
                     raise InvalidValue(msg)
-                
+
                 value = int(value)
                 if value < 0 and field_type.startswith('Positive'):
                     #loglist.append('Column %s = %s, less than zero so set to 0' \
@@ -161,7 +162,7 @@ class TempModel(object):
         field = self.get_field(field_name)
         field_type = field.get_internal_type()
         if field_type in ['ForeignKey', 'ManyToManyField']:
-            raise TempModel.InvalidFieldType('%s field passed as value' % (field_type))
+            raise InvalidFieldType('%s field passed as value' % (field_type))
 
         value = self.clean(value, field_type)
         self.values[field_name] = (field, value)
@@ -170,60 +171,60 @@ class TempModel(object):
 
         field = self.get_field(field_name)
         if not field.get_internal_type() == 'ManyToManyField':
-            raise TempModel.InvalidFieldType('%s field passed as value' % (field_type))
-        
+            raise InvalidFieldType('%s field passed as value' % (field_type))
+
         try:
             ind = int(ind)
         except ValueError:
             # field following the m2m fielname isnt a number
-            # so we cant parse it to the end 
+            # so we cant parse it to the end
             raise InvalidIndex()
-        
+
         tm = None
 
         if field_name not in self.m2ms:
            # current_leaf['m2ms'][field_name] = {}
             self.m2ms[field_name] = (field, {})
 
-        if ind not in self.m2ms[field_name][1]: 
+        if ind not in self.m2ms[field_name][1]:
             m2m_model = field.related.parent_model
             tm = TempModel(m2m_model)
             self.m2ms[field_name][1][ind] = tm
         else:
             tm = self.m2ms[field_name][1][ind]
-        
+
         return tm
 
     def add_fk(self, field_name):
 
         field = self.get_field(field_name)
         if not field.get_internal_type() == 'ForeignKey':
-            raise TempModel.InvalidFieldType('%s field passed as fk' % (field_type))
+            raise InvalidFieldType('%s field passed as fk' % (field_type))
 
         tm = None
         if field_name not in self.fks:
-            fk_model = field.related.parent_model 
+            fk_model = field.related.parent_model
             tm  = TempModel(fk_model)
             self.fks[field_name] = (field, tm)
         else:
             tm = self.fks[field_name][1]
-        
+
         return tm
-               
+
 class Command(LabelCommand):
     """
     Parse and map a CSV resource to a Django model.
-    
-    Notice that the doc tests are merely illustrational, and will not run 
+
+    Notice that the doc tests are merely illustrational, and will not run
     as is.
     """
-    
+
     option_list = BaseCommand.option_list + (
-               make_option('--mappings', default='', 
+               make_option('--mappings', default='',
                            help='Please provide the file to import from'),
-               make_option('--model', default='iisharing.Item', 
+               make_option('--model', default='iisharing.Item',
                            help='Please provide the model to import to'),
-               make_option('--charset', default='', 
+               make_option('--charset', default='',
                            help='Force the charset conversion used rather than detect it')
                    )
     help = "Imports a CSV file to a model"
@@ -248,10 +249,10 @@ class Command(LabelCommand):
 
     def handle_label(self, label, **options):
         """ Handle the circular reference by passing the nested
-            save_csvimport function 
+            save_csvimport function
         """
-        filename = label 
-        mappings = options.get('mappings', []) 
+        filename = label
+        mappings = options.get('mappings', [])
         modelname = options.get('model', 'Item')
         charset = options.get('charset','')
         # show_traceback = options.get('traceback', True)
@@ -280,12 +281,12 @@ class Command(LabelCommand):
         self.model = models.get_model(app_label, model)
         if mappings:
             self.mappings = self.__mappings(mappings)
-        self.nameindexes = bool(nameindexes) 
+        self.nameindexes = bool(nameindexes)
         self.file_name = csvfile
         self.deduplicate = deduplicate
         if uploaded:
             self.csvfile = self.__csvfile(uploaded.path)
-        else:    
+        else:
             self.check_filesystem(csvfile)
 
     def check_filesystem(self, csvfile):
@@ -305,7 +306,7 @@ class Command(LabelCommand):
                 self.csvfile = self.__csvfile(csvfile)
         if not getattr(self, 'csvfile', []):
             raise Exception('File %s not found' % csvfile)
-    
+
     def run(self, logid=0):
         if self.nameindexes:
             indexes = self.csvfile.pop(0)
@@ -320,47 +321,47 @@ class Command(LabelCommand):
             fieldmap[field.name] = field
 
         if self.mappings:
-            self.loglist.append('Using manually entered mapping list') 
+            self.loglist.append('Using manually entered mapping list')
         else:
             for i, heading in enumerate(self.csvfile[0]):
                 key = heading.lower()
                 if not key:
                     continue
-                
+
                 mapping.append('column%s=%s' % (i+1, key))
             mappingstr = ','.join(mapping)
             if mapping:
-                self.loglist.append('Using mapping from first row of CSV file') 
-                self.mappings = self.__mappings(mappingstr)            
+                self.loglist.append('Using mapping from first row of CSV file')
+                self.mappings = self.__mappings(mappingstr)
         if not self.mappings:
             self.loglist.append('''No fields in the CSV file match %s.%s\n
-                                   - you must add a header field name row 
-                                   to the CSV file or supply a mapping list''' % 
+                                   - you must add a header field name row
+                                   to the CSV file or supply a mapping list''' %
                                 (self.model._meta.app_label, self.model.__name__))
             return self.loglist
-        
+
         for row_ind, row in enumerate(self.csvfile[1:]):
             counter += 1
             # create the top level instance
             instance_tree = TempModel(self.model)
 
             for (field_names, column) in self.mappings:
-                
+
                 if self.nameindexes:
                     column = indexes.index(column)
                 else:
                     column = int(column)-1
-                
+
                 value = row[column]
                 if value == '':
                     continue
-                
+
                 if self.debug:
-                    self.loglist.append('%s.%s = "%s"' % (self.model.__name__, 
+                    self.loglist.append('%s.%s = "%s"' % (self.model.__name__,
                                                           field, value))
-                   
+
                 current_leaf = instance_tree
-    
+
                 field_names = list(field_names)
                 while field_names:
                     # take the leftmost fieldname and try and resolve
@@ -369,7 +370,7 @@ class Command(LabelCommand):
                     try:
                         try:
                             ind_string = field_names.pop(0)
-                            try: 
+                            try:
                                 ind = int(ind_string)
                             except ValueError:
                                 # not an ind; put it back
@@ -385,22 +386,22 @@ class Command(LabelCommand):
                             # value field
                             try:
                                 current_leaf = current_leaf.add_value(field_name, value)
-                            except TempModel.InvalidValue, e:
+                            except InvalidValue, e:
                                 msg = "Could not prepare value '%s' in cell [%s, %s]" % \
                                     (value, row_ind, column)
                                 self.loglist.append(msg)
-                    except TempModel.InvalidFieldType, e:
+                    except InvalidFieldType, e:
                         msg = "mapping string mapped field %s to invalid field type (%s)" % \
                             (field_name, e)
                         self.loglist.append(msg)
 
-                    except TempModel.NoSuchField, e:
+                    except NoSuchField, e:
                         msg = "%s" % (e)
                         self.loglist.append(msg)
 
             try:
                 instance = self.tree_save(instance_tree)
-            
+
                 # TODO: this is a hangover from the original code; check if necessary
                 instance.csvimport_id = csvimportid
                 instance.save()
@@ -413,14 +414,14 @@ class Command(LabelCommand):
                            'error_log':'\n'.join(self.loglist),
                            'import_date':datetime.now()}
             return self.loglist
-    
+
     def fetch_for_values(self, leaf):
-       
+
         # Match always on unique fields
         # Failing that, try required fields?
-        # Never match on optional fields 
+        # Never match on optional fields
         # (save an instance, and then
-        # add a new optional field and it 
+        # add a new optional field and it
         # wont match)
 
         matchdict = {}
@@ -437,12 +438,12 @@ class Command(LabelCommand):
             return instance
 
         # Note: skip M2M fields as they don't really 'identify' their parent
-        
+
         try:
             instance = leaf.get_model().objects.get(**matchdict)
         except MultipleObjectsReturned:
             # The leaf values matched multiple instances.
-            # No clear path ahead here so bail 
+            # No clear path ahead here so bail
             raise NonUniqueLeafValues()
 
         except ObjectDoesNotExist:
@@ -450,15 +451,15 @@ class Command(LabelCommand):
             pass
 
         return instance
-        
+
     def tree_save(self, leaf):
-         
+
         # save fks first as these may be null=False
         for field, fk in leaf.get_fks():
             try:
                 self.tree_save(fk)
             except TreeSaveException, e:
-                self.loglist.append('Couldnt create fk %s for %s: %s.' 
+                self.loglist.append('Couldnt create fk %s for %s: %s.'
                         % (field.name, fk.get_model(), e))
                 continue
 
@@ -466,11 +467,11 @@ class Command(LabelCommand):
             instance = self.fetch_for_values(leaf)
         except NonUniqueLeafValues:
             error = 'values (%s) yeilded multiple instances for model %s' % (
-                ', '.join(['%s:%s' % (field.name, value) for field, value in leaf.get_values()]), 
+                ', '.join(['%s:%s' % (field.name, value) for field, value in leaf.get_values()]),
                 leaf.get_model())
 
             raise TreeSaveException(error)
-        
+
         if not instance:
             try:
                 instance = leaf.get_model()()
@@ -497,13 +498,13 @@ class Command(LabelCommand):
             except Exception, err: # TODO catch explicit exceptions
                 self.loglist.append('Couldnt add fk %s to %s: %s.' % \
                         (field.name, fk.get_model(), err))
-         
+
         # Need to save the main instance before setting m2ms
         try:
             instance.save()
         except Exception, err:
             raise TreeSaveException('main instance save failed: %s' % (err))
-      
+
         leaf.set_instance(instance)
 
         # add m2m fields to the main instance
@@ -526,7 +527,7 @@ class Command(LabelCommand):
 
 
     def insert_fkey(self, foreignkey, rowcol):
-        """ Add fkey if not present 
+        """ Add fkey if not present
             If there is corresponding data in the model already,
             we do not need to add more, since we are dealing with
             foreign keys, therefore foreign data
@@ -534,7 +535,7 @@ class Command(LabelCommand):
         fk_key, fk_field = foreignkey
         if fk_key and fk_field:
             fk_model = models.get_model(self.app_label, fk_key)
-            matches = fk_model.objects.filter(**{fk_field+'__exact': 
+            matches = fk_model.objects.filter(**{fk_field+'__exact':
                                                  rowcol})
 
             if not matches:
@@ -544,27 +545,27 @@ class Command(LabelCommand):
 
             rowcol = fk_model.objects.filter(**{fk_field+'__exact': rowcol})[0]
         return rowcol
-        
+
     def error(self, message, type=1):
         """
         Types:
             0. A fatal error. The most drastic one. Will quit the program.
             1. A notice. Some minor thing is in disorder.
         """
-        
+
         types = (
             ('Fatal error', FatalError),
             ('Notice', None),
         )
-        
+
         self.errors.append((message, type))
-        
+
         if type == 0:
             # There is nothing to do. We have to quite at this point
             raise types[0][1], message
         elif self.debug == True:
             print "%s: %s" % (types[type][0], message)
-    
+
     def __csvfile(self, datafile):
         """ Detect file encoding and open appropriately """
         filehandle = open(datafile)
@@ -577,12 +578,12 @@ class Command(LabelCommand):
             self.error('Could not open specified csv file, %s, or it does not exist' % datafile, 0)
         else:
             # CSV Reader returns an iterable, but as we possibly need to
-            # perform list commands and since list is an acceptable iterable, 
+            # perform list commands and since list is an acceptable iterable,
             # we'll just transform it.
-            return list(self.charset_csv_reader(csv_data=csvfile, 
+            return list(self.charset_csv_reader(csv_data=csvfile,
                                                 charset=self.charset))
 
-    def charset_csv_reader(self, csv_data, dialect=csv.excel, 
+    def charset_csv_reader(self, csv_data, dialect=csv.excel,
                            charset='utf-8', **kwargs):
         csv_reader = csv.reader(self.charset_encoder(csv_data, charset),
                                 dialect=dialect, **kwargs)
@@ -593,25 +594,25 @@ class Command(LabelCommand):
     def charset_encoder(self, csv_data, charset='utf-8'):
         for line in csv_data:
             yield line.encode(charset)
-    
+
     def __mappings(self, mapping_string):
         """
         Parse the mappings, and return a list of them.
         """
         if not mapping_string:
             return []
-    
+
         model = self.model
-        
+
         mapping_string = mapping_string.replace(',', ' ')
         mapping_string = mapping_string.replace('column', '')
 
         """
         Parse the custom mapping syntax (column1=[fk1.fk2...fk3].field,
         etc.)
-        
+
         """
-        
+
         pattern = re.compile(r'(\w+)=([\w.]+)')
         matches = pattern.findall(mapping_string)
         matches = list(matches)
@@ -631,7 +632,7 @@ class FatalError(Exception):
     """
     def __init__(self, value):
         self.value = value
-        
+
     def __str__(self):
         return repr(self.value)
 
