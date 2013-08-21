@@ -516,11 +516,26 @@ class Command(LabelCommand):
                     self.loglist.append('Couldnt save m2m %s[%s] for %s: %s.' % \
                             (field.name, ind, instance, err))
                     continue
+                has_custom_through = field.rel.through._meta.auto_created == False
+                if has_custom_through:
+                    parent_field_name = field._get_m2m_attr(field.related, 'name')
+                    child_field_name = field._get_m2m_reverse_attr(field.related, 'name')
+                    through_class = field.rel.through
+                    try:
+                        through_instance = through_class.objects.get(**{parent_field_name+'__exact': instance,
+                                                                        child_field_name+'__exact':m2m})
+                    except:
+                        through_instance = through_class()
 
-                try:
-                    instance.__getattribute__(field.name).add(m2m)
-                except Exception, err:
-                    self.loglist.append('Couldnt add m2m %s to %s : %s.' % (field.name, instance, err))
+                    setattr(through_instance, parent_field_name, instance)
+                    setattr(through_instance, child_field_name, m2m)
+                    through_instance.save()
+                    # TODO (shauno): allow user to set attributes of through model
+                else:
+                    try:
+                        instance.__getattribute__(field.name).add(m2m)
+                    except Exception, err:
+                        self.loglist.append('Couldnt add m2m %s to %s : %s.' % (field.name, instance, err))
 
         return instance
 
