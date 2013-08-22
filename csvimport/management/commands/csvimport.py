@@ -66,11 +66,12 @@ class InvalidFieldType(Exception):
 class TempModel(object):
 
 
-    def __init__(self, model):
+    def __init__(self, model, through=None):
         self.model = model
         self.values = {}
         self.fks = {}
         self.m2ms = {}
+        self.through = through
         self.instance = None
 
     def get_model(self):
@@ -124,7 +125,8 @@ class TempModel(object):
         return self.instance
 
     def clean(self, value, field_type):
-        value = value.strip()
+        if isinstance(value, str):
+            value = value.strip()
         if field_type in DATE:
             try:
                 value = datetime.strptime(value, "%d/%m/%Y")
@@ -159,11 +161,16 @@ class TempModel(object):
 
     def add_value(self, field_name, value):
 
-        field = self.get_field(field_name)
-        field_type = field.get_internal_type()
-        if field_type in ['ForeignKey', 'ManyToManyField']:
-            raise InvalidFieldType('%s field passed as value' % (field_type))
+        try:
+            field = self.get_field(field_name)
+        except Exception, e:
+            if self.through:
+                self.through.add_value(field_name, value)
+                return
+            else:
+                raise e
 
+        field_type = field.get_internal_type()
         value = self.clean(value, field_type)
         self.values[field_name] = (field, value)
 
@@ -188,7 +195,12 @@ class TempModel(object):
 
         if ind not in self.m2ms[field_name][1]:
             m2m_model = field.related.parent_model
-            tm = TempModel(m2m_model)
+            through = None
+            # check if we have a custom through model
+            if field.rel.through._meta.auto_created == False:
+                through = TempModel(field.rel.through)
+
+            tm = TempModel(m2m_model, through=through)
             self.m2ms[field_name][1][ind] = tm
         else:
             tm = self.m2ms[field_name][1][ind]
@@ -511,7 +523,7 @@ class Command(LabelCommand):
         for field, m2m_list in leaf.get_m2ms():
             for ind, m2m in m2m_list.items():
                 try:
-                    m2m = self.tree_save(m2m)
+                    m2m_instance = self.tree_save(m2m)
                 except TreeSaveException, err:
                     self.loglist.append('Couldnt save m2m %s[%s] for %s: %s.' % \
                             (field.name, ind, instance, err))
@@ -520,20 +532,12 @@ class Command(LabelCommand):
                 if has_custom_through:
                     parent_field_name = field._get_m2m_attr(field.related, 'name')
                     child_field_name = field._get_m2m_reverse_attr(field.related, 'name')
-                    through_class = field.rel.through
-                    try:
-                        through_instance = through_class.objects.get(**{parent_field_name+'__exact': instance,
-                                                                        child_field_name+'__exact':m2m})
-                    except:
-                        through_instance = through_class()
-
-                    setattr(through_instance, parent_field_name, instance)
-                    setattr(through_instance, child_field_name, m2m)
-                    through_instance.save()
-                    # TODO (shauno): allow user to set attributes of through model
+                    m2m.through.add_value(parent_field_name, instance)
+                    m2m.through.add_value(child_field_name, m2m.instance)
+                    self.tree_save(m2m.through)
                 else:
                     try:
-                        instance.__getattribute__(field.name).add(m2m)
+                        instance.__getattribute__(field.name).add(m2m_instance)
                     except Exception, err:
                         self.loglist.append('Couldnt add m2m %s to %s : %s.' % (field.name, instance, err))
 
